@@ -1922,6 +1922,18 @@ document.getElementById('emoji-display').addEventListener('click',e=>{e.stopProp
 document.getElementById('emoji-clear-btn').addEventListener('click',()=>setNodeEmoji(null));
 document.addEventListener('click',e=>{if(!emojiPopup.contains(e.target)&&e.target!==document.getElementById('emoji-pick-btn')&&e.target!==document.getElementById('emoji-display'))closeEmojiPicker();});
 document.querySelectorAll('.shape-opt').forEach(o=>o.addEventListener('click',()=>{const n=gn(selId);if(!n)return;snap();n.shape=o.dataset.shape;measure(n);document.querySelectorAll('.shape-opt').forEach(x=>x.classList.toggle('on',x===o));render();}));
+function renderTagRow(nid){
+  const n=gn(nid);if(!n)return;
+  const row=document.getElementById('tag-row');row.innerHTML='';
+  (n.tags||[]).forEach((tag,i)=>{
+    const chip=document.createElement('span');chip.className='tagedit';
+    const c=tc(allTags.indexOf(tag));
+    chip.style.background=c+'22';chip.style.borderColor=c;chip.style.color=c;
+    chip.innerHTML=tag+' <span class="td">✕</span>';
+    chip.querySelector('.td').addEventListener('click',()=>{snap();n.tags.splice(i,1);rebuildTags();renderTagRow(nid);render();});
+    row.appendChild(chip);
+  });
+}
 document.getElementById('add-tag-btn').addEventListener('click',()=>{const n=gn(selId);if(!n)return;const tag=prompt('Nom du tag :');if(!tag||!tag.trim())return;snap();n.tags=n.tags||[];if(!n.tags.includes(tag.trim()))n.tags.push(tag.trim());rebuildTags();renderTagRow(selId);render();});
 function renderColorRow(nid){const n=gn(nid);if(!n)return;const row=document.getElementById('color-row');row.innerHTML='';const current=branchColor(n);PAL.forEach(c=>{const d=document.createElement('div');d.className='color-swatch'+(current===c?' on':'');d.style.background=c;d.title='Appliquer et verrouiller cette couleur';d.addEventListener('click',()=>{snap();n.color=c;n.colorOverride=c;n.colorLocked=true;n.originalColor=n.originalColor||c;render();renderColorRow(nid);});row.appendChild(d);});const custom=document.createElement('div');custom.className='color-custom';custom.innerHTML=`<input type="color" value="${current||'#5b6af0'}">`;custom.querySelector('input').addEventListener('input',e=>{snap();n.color=e.target.value;n.colorOverride=e.target.value;n.colorLocked=true;n.originalColor=n.originalColor||e.target.value;render();renderColorRow(nid);});row.appendChild(custom);const unlock=document.createElement('button');unlock.className='hbtn';unlock.style.height='24px';unlock.style.padding='0 8px';unlock.style.fontSize='11px';unlock.textContent=n.colorLocked?'🔒 Verrouillée':'Déverrouillée';unlock.title='Cliquer pour verrouiller ou déverrouiller la couleur manuelle';unlock.addEventListener('click',()=>{snap();n.colorLocked=!n.colorLocked;if(!n.colorLocked&&n.colorOverride){n.colorOverride=null;n.color=null;}render();renderColorRow(nid);});row.appendChild(unlock);}
 function renderConnStyleRow(nid){const n=gn(nid);if(!n)return;document.querySelectorAll('.conn-style-btn').forEach(b=>b.classList.toggle('on',b.dataset.cs===(n.connStyle||'solid')));}
