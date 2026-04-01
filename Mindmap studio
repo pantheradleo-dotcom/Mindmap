@@ -400,9 +400,6 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
 }
 .lopt:hover { border-color: var(--acc); color: var(--acc); background: rgba(91,106,240,.06); }
 .lopt svg { width: 40px; height: 32px; }
-.lopt.partial{border-style:dashed;}
-.lopt-sep{grid-column:1/-1;font-size:10px;font-weight:600;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px;padding:6px 0 2px;border-top:1px solid var(--brd);margin-top:2px;}
-#btn-focus.active{background:var(--acc);border-color:transparent;color:#fff;}
 </style>
 </head>
 <body>
@@ -425,7 +422,7 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <button class="hbtn pri" id="btn-templates">📋 Templates</button>
   <button class="hbtn" id="btn-layout">⬡ Layout</button>
   <div id="layout-popup"></div>
-  <button class="hbtn" id="btn-focus" title="Focus sur une branche">🎯 Focus</button>
+  <button class="hbtn" id="btn-move-mode" title="Modes : Simple / Branche / Branche+ • Raccourci : B">Déplacement : Simple</button>
   <button class="hbtn" id="btn-tags">🏷 Tags</button>
   <div class="hsep"></div>
   <button class="hbtn" id="btn-palette">🎨 <span id="pal-name">Défaut</span></button>
@@ -615,8 +612,6 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <div class="fbsep"></div>
   <button class="fb" id="fb-coll" title="Replier/Déplier">◎</button>
   <div class="fbsep"></div>
-  <button class="fb" id="fb-focus" title="Focus branche">🎯</button>
-  <div class="fbsep"></div>
   <button class="fb danger" id="fb-del" title="Supprimer (Suppr)">✕</button>
 </div>
 
@@ -735,6 +730,12 @@ const tc=i=>TAG_COLORS[i%TAG_COLORS.length];
 let nodes=[],conns=[],selId=null,hovId=null;
 let selectedIds=new Set();
 let dragId=null,dragOX=0,dragOY=0,multiDragOffsets=new Map();
+const MOVE_MODES={SINGLE:'single',BRANCH:'branch',BRANCH_PREVIEW:'branch-preview'};
+const MOVE_MODE_KEY='mindmap-studio-move-mode';
+let moveMode=MOVE_MODES.SINGLE;
+let dragBranchIds=[];
+let dragBranchOffsets=new Map();
+let previewBranchIds=new Set();
 let panning=false,panSX=0,panSY=0;
 let viewX=0,viewY=0,scale=1;
 let spaceDown=false,activeTool='select';
@@ -747,9 +748,6 @@ let isDark=false,currentTheme='default';
 let activeTagFilter=null,allTags=[];
 let collapseAnim={};
 let clipboard=null;
-// ── FOCUS BRANCH STATE ──────────────────────────────────────────────
-let focusBranchRootId=null;
-let focusBranchIds=new Set();
 // ── SHAPES & FRAMES ─────────────────────────────────────────────────────
 let shapes=[];
 let frames=[];
@@ -934,6 +932,71 @@ function measure(n){
 const gn=id=>nodes.find(n=>n.id===id);
 const kids=id=>nodes.filter(n=>n.parentId===id);
 const hasKids=id=>nodes.some(n=>n.parentId===id);
+
+function getChildIds(nodeId){
+  const ids=[];
+  const seen=new Set();
+  kids(nodeId).forEach(n=>{if(!seen.has(n.id)){seen.add(n.id);ids.push(n.id);}});
+  conns.forEach(c=>{
+    if(c.s!==nodeId) return;
+    const target=gn(c.t);
+    if(!target) return;
+    if(target.parentId && target.parentId!==nodeId) return;
+    if(!seen.has(target.id)){seen.add(target.id);ids.push(target.id);}
+  });
+  return ids;
+}
+function getDescendantIds(rootId){
+  const out=[];const stack=[rootId];const visited=new Set([rootId]);
+  while(stack.length){
+    const cur=stack.pop();
+    getChildIds(cur).forEach(cid=>{
+      if(visited.has(cid))return;
+      visited.add(cid);out.push(cid);stack.push(cid);
+    });
+  }
+  return out;
+}
+function collectBranchIds(rootId){return [rootId,...getDescendantIds(rootId)];}
+function buildBranchOffsets(rootId){
+  const root=gn(rootId), offsets=new Map();
+  if(!root)return offsets;
+  collectBranchIds(rootId).forEach(id=>{const n=gn(id);if(n)offsets.set(id,{dx:n.x-root.x,dy:n.y-root.y});});
+  return offsets;
+}
+function clearBranchPreview(){previewBranchIds.clear();}
+function setBranchPreview(rootId){previewBranchIds=new Set(rootId?collectBranchIds(rootId):[]);}
+function isBranchMoveMode(){return moveMode===MOVE_MODES.BRANCH||moveMode===MOVE_MODES.BRANCH_PREVIEW;}
+function isBranchPreviewMode(){return moveMode===MOVE_MODES.BRANCH_PREVIEW;}
+function loadMoveMode(){
+  try{
+    const saved=localStorage.getItem(MOVE_MODE_KEY);
+    if(saved&&Object.values(MOVE_MODES).includes(saved))moveMode=saved;
+  }catch{}
+}
+function updateMoveModeButton(){
+  const btn=document.getElementById('btn-move-mode');
+  if(!btn)return;
+  const cfg=moveMode===MOVE_MODES.BRANCH
+    ?{label:'Déplacement : Branche',title:'Déplacement de la branche entière • Raccourci : B'}
+    :moveMode===MOVE_MODES.BRANCH_PREVIEW
+      ?{label:'Déplacement : Branche+',title:'Déplacement de branche + prévisualisation • Raccourci : B'}
+      :{label:'Déplacement : Simple',title:'Déplacement simple du nœud • Raccourci : B'};
+  btn.textContent=cfg.label;btn.title=cfg.title;
+  btn.classList.toggle('pri',moveMode!==MOVE_MODES.SINGLE);
+}
+function persistMoveMode(){try{localStorage.setItem(MOVE_MODE_KEY,moveMode);}catch{}}
+function cycleMoveMode(){
+  moveMode=moveMode===MOVE_MODES.SINGLE?MOVE_MODES.BRANCH:moveMode===MOVE_MODES.BRANCH?MOVE_MODES.BRANCH_PREVIEW:MOVE_MODES.SINGLE;
+  updateMoveModeButton();persistMoveMode();
+  if(dragId&&isBranchMoveMode())setBranchPreview(dragId);
+  else if(isBranchPreviewMode()&&hovId)setBranchPreview(hovId);
+  else clearBranchPreview();
+  render();
+  const msg=moveMode===MOVE_MODES.SINGLE?'Déplacement simple':moveMode===MOVE_MODES.BRANCH?'Déplacement de branche':'Déplacement de branche + prévisualisation';
+  toast(msg,'in');
+}
+
 function isHidden(id){const n=gn(id);if(!n||!n.parentId)return false;const p=gn(n.parentId);if(!p)return false;if(p.collapsed)return true;return isHidden(p.id);}
 function getBranchIdx(n){
   // Returns index of n's depth-1 ancestor among root's children (for PAL[] indexing)
@@ -1028,8 +1091,7 @@ function addConn(s,t,type='h'){if(conns.find(c=>(c.s===s&&c.t===t)||(c.s===t&&c.
 // ── TAGS ──────────────────────────────────────────────────────────────────
 function rebuildTags(){const set=new Set();nodes.forEach(n=>(n.tags||[]).forEach(t=>set.add(t)));allTags=[...set];buildFilterChips();}
 function buildFilterChips(){const wrap=document.getElementById('tfchips');wrap.innerHTML='';allTags.forEach(tag=>{const b=document.createElement('button');b.className='tfchip'+(activeTagFilter===tag?' on':'');b.textContent=tag;b.addEventListener('click',()=>{activeTagFilter=activeTagFilter===tag?null:tag;b.classList.toggle('on',activeTagFilter===tag);render();});wrap.appendChild(b);});}
-function snapshotLayoutColors(){const snap={};nodes.forEach(n=>{snap[n.id]={visible:branchColor(n),locked:!!n.colorLocked,override:n.colorOverride,color:n.color,original:n.originalColor,parentId:n.parentId,depth:n.depth,fontSize:n.fontSize,fontWeight:n.fontWeight};});return snap;}
-function restoreLayoutColors(snap){if(!snap)return;nodes.forEach(n=>{const s=snap[n.id];if(!s)return;if(s.locked||s.override){n.color=s.color;n.colorOverride=s.override;n.originalColor=s.original;n.colorLocked=s.locked;}else{n.color=s.visible;n.colorOverride=null;n.originalColor=s.original||s.visible;}n.parentId=s.parentId;n.depth=s.depth;n.fontSize=s.fontSize;n.fontWeight=s.fontWeight;});previewColorsActive=false;previewColorMap.clear();}
+function renderTagRow(nodeId){const n=gn(nodeId);if(!n)return;const row=document.getElementById('tag-row');row.innerHTML='';(n.tags||[]).forEach((tag,i)=>{const c=tc(allTags.indexOf(tag));const el=document.createElement('div');el.className='tagedit';el.style.background=c+'18';el.style.borderColor=c+'55';el.style.color=c;el.innerHTML=`<span class="tx">${tag}</span><span class="td" data-i="${i}">✕</span>`;el.querySelector('.td').addEventListener('click',()=>{snap();n.tags.splice(i,1);rebuildTags();renderTagRow(nodeId);render();});row.appendChild(el);});}
 
 // ── AUTO-LAYOUT ───────────────────────────────────────────────────────────
 function autoLayout(rootId){
@@ -1085,43 +1147,6 @@ function isDescendantOf(nodeId, ancestorId) {
   return false;
 }
 
-// ── FOCUS BRANCH HELPERS ────────────────────────────────────────────
-function getDescendantIds(rootId){
-  const result=new Set();
-  const queue=[rootId];
-  while(queue.length){const id=queue.shift();kids(id).forEach(c=>{result.add(c.id);queue.push(c.id);});}
-  return result;
-}
-function collectBranchIds(rootId){
-  const ids=getDescendantIds(rootId);
-  ids.add(rootId);
-  // Add ancestor chain up to global root for path visibility
-  let cur=gn(rootId);
-  while(cur&&cur.parentId){ids.add(cur.parentId);cur=gn(cur.parentId);}
-  return ids;
-}
-function setFocusBranch(rootId){
-  if(!rootId||!gn(rootId))return;
-  focusBranchRootId=rootId;
-  focusBranchIds=collectBranchIds(rootId);
-  document.getElementById('btn-focus').textContent='✕ Quitter focus';
-  document.getElementById('btn-focus').classList.add('active');
-  render();mmR();
-}
-function clearFocusBranch(){
-  focusBranchRootId=null;
-  focusBranchIds=new Set();
-  document.getElementById('btn-focus').textContent='🎯 Focus';
-  document.getElementById('btn-focus').classList.remove('active');
-  render();mmR();
-}
-function isFocusActive(){
-  if(focusBranchRootId&&!gn(focusBranchRootId)){focusBranchRootId=null;focusBranchIds=new Set();document.getElementById('btn-focus').textContent='🎯 Focus';document.getElementById('btn-focus').classList.remove('active');}
-  return focusBranchRootId!==null;
-}
-function shouldDimNode(nid){return isFocusActive()&&!focusBranchIds.has(nid);}
-function shouldDimConn(conn){return isFocusActive()&&(!focusBranchIds.has(conn.s)||!focusBranchIds.has(conn.t));}
-
 // ── LAYOUT ALGORITHMS ────────────────────────────────────────────────
 function layoutTreeH() {
   attachOrphans();
@@ -1152,10 +1177,12 @@ function layoutTreeH() {
 
 
 function rebuildParentIds() {
-  // Rebuild only hierarchy metadata used by layout.
-  // Colors must never be mutated here.
+  // STEP 1 — Snapshot resolved colors BEFORE any structural change
+  // n.color is null for Tab-created nodes, so we lock in the visual color via branchColor()
+  const savedColors = {};
+  nodes.forEach(n => { savedColors[n.id] = branchColor(n); });
 
-  // STEP 1 — Find the true root
+  // STEP 2 — Find the true root
   const roots = nodes.filter(n => n.depth === 0 && !n.parentId);
   if (!roots.length) return;
 
@@ -1226,7 +1253,11 @@ function rebuildParentIds() {
       }));
   }
 
-  // STEP 4 — Update typography only, never colors
+  // STEP 4 — Restore colors: overwrite n.color with the pre-BFS resolved value
+  // branchColor(n) will now return n.color directly, ignoring getBranchIdx entirely
+  nodes.forEach(n => { n.color = savedColors[n.id]; });
+
+  // STEP 5 — Update typography only, never colors
   nodes.forEach(n => {
     n.fontSize   = n.depth === 0 ? 17 : n.depth === 1 ? 14 : 13;
     n.fontWeight = n.depth === 0 ? 700 : n.depth === 1 ? 600 : 500;
@@ -1309,79 +1340,6 @@ function layoutLR() {
   }
   placeSide(right, 1);
   placeSide(left, -1);
-}
-
-// ── PARTIAL LAYOUT (branch only) ────────────────────────────────────
-function applyPartialLayout(rootId,layoutType){
-  const root=gn(rootId);if(!root)return;
-  // Collect branch node IDs
-  const brIds=new Set();brIds.add(rootId);
-  function collectD(id){kids(id).forEach(c=>{brIds.add(c.id);collectD(c.id);});}
-  collectD(rootId);
-  // Snapshot colors
-  const colorSnap=snapshotLayoutColors();
-  // Anchor position
-  const ax=root.x,ay=root.y;
-  snap();
-  // Count leaves within branch
-  function cntL(id){const ch=kids(id).filter(c=>brIds.has(c.id));return ch.length?ch.reduce((s,c)=>s+cntL(c.id),0):1;}
-
-  if(layoutType==='radial'){
-    (function plR(nid,d,sa,as){
-      const ch=kids(nid).filter(c=>brIds.has(c.id));if(!ch.length)return;
-      const r2=160+d*130;
-      const lv=ch.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
-      const totalAng=Math.min(Math.PI*2,Math.max(as,tot*0.45));
-      let curAng=sa-totalAng/2;
-      ch.forEach((c,i)=>{const share=(lv[i]/tot)*totalAng;const a=curAng+share/2;
-        c.x=gn(nid).x+Math.cos(a)*r2;c.y=gn(nid).y+Math.sin(a)*r2;
-        plR(c.id,d+1,a,share);curAng+=share;});
-    })(rootId,0,-Math.PI/2,Math.PI*2);
-  } else if(layoutType==='tree-h'){
-    const xG=220,yG=75;
-    (function place(id,depth,yC){
-      const n=gn(id);if(!n)return;n.x=ax+depth*xG;n.y=yC;
-      const ch=kids(id).filter(c=>brIds.has(c.id));if(!ch.length)return;
-      const lv=ch.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
-      let curY=yC-(tot-1)*yG/2;
-      ch.forEach((c,i)=>{place(c.id,depth+1,curY+lv[i]*yG/2);curY+=lv[i]*yG;});
-    })(rootId,0,ay);
-  } else if(layoutType==='tree-v'){
-    const yG=140,xG=190;
-    (function place(id,depth,xC){
-      const n=gn(id);if(!n)return;n.x=xC;n.y=ay+depth*yG;
-      const ch=kids(id).filter(c=>brIds.has(c.id));if(!ch.length)return;
-      const lv=ch.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
-      let curX=xC-(tot-1)*xG/2;
-      ch.forEach((c,i)=>{place(c.id,depth+1,curX+lv[i]*xG/2);curX+=lv[i]*xG;});
-    })(rootId,0,ax);
-  } else if(layoutType==='lr'){
-    const ch=kids(rootId).filter(c=>brIds.has(c.id));
-    const sorted=[...ch].sort((a,b)=>cntL(b.id)-cntL(a.id));
-    const right2=[],left2=[];
-    sorted.forEach((n,i)=>{if(i%2===0)right2.push(n);else left2.push(n);});
-    const yG=75,xS=190;
-    function plB(id,px,py,dir){const n=gn(id);if(!n)return;n.x=px;n.y=py;
-      const ch2=kids(id).filter(c=>brIds.has(c.id));if(!ch2.length)return;
-      const lv=ch2.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
-      let curY=py-(tot-1)*yG/2;
-      ch2.forEach((c,i)=>{plB(c.id,px+dir*xS,curY+lv[i]*yG/2,dir);curY+=lv[i]*yG;});}
-    function plS(list,dir){const lv=list.map(n=>cntL(n.id));const tot=lv.reduce((a,b)=>a+b,0);
-      let curY=ay-(tot-1)*yG/2;
-      list.forEach((bn,i)=>{plB(bn.id,ax+dir*210,curY+lv[i]*yG/2,dir);curY+=lv[i]*yG;});}
-    plS(right2,1);plS(left2,-1);
-  }
-  // Collision relaxation within branch only
-  const bNodes=nodes.filter(n=>brIds.has(n.id));
-  for(let it=0;it<50;it++){for(let i=0;i<bNodes.length;i++){for(let j=i+1;j<bNodes.length;j++){
-    const a=bNodes[i],b=bNodes[j];const dx=b.x-a.x,dy=b.y-a.y,dist=Math.hypot(dx,dy)||1;
-    const minD=(a.width+b.width)/2+55;
-    if(dist<minD){const push=(minD-dist)/2*0.5;
-      if(a.id!==rootId){a.x-=(dx/dist)*push;a.y-=(dy/dist)*push;}
-      if(b.id!==rootId){b.x+=(dx/dist)*push;b.y+=(dy/dist)*push;}}}}}
-  // Restore colors
-  restoreLayoutColors(colorSnap);
-  render();mmR();
 }
 
 // ── SHAPE HELPERS ────────────────────────────────────────────────────
@@ -1604,6 +1562,7 @@ document.getElementById('btn-palette').addEventListener('click',e=>{e.stopPropag
 document.addEventListener('click',e=>{if(!palPopup.contains(e.target)&&e.target!==document.getElementById('btn-palette'))closePalettePopup();});
 
 document.getElementById('btn-color-mode').addEventListener('click',cycleColorMode);
+document.getElementById('btn-move-mode').addEventListener('click',cycleMoveMode);
 document.getElementById('btn-harmonize').addEventListener('click',harmonizeMapColors);
 document.getElementById('btn-reset-colors').addEventListener('click',resetMapColors);
 document.getElementById('btn-harmonize').addEventListener('mouseenter',()=>{if(nodes.length)buildColorPreview();});
@@ -1624,7 +1583,7 @@ function _render(){
   // 2) Shapes
   for(const s of shapes) drawShape(s);
   // 3) Connections
-  for(const c of conns){const s=gn(c.s),t=gn(c.t);if(s&&t&&!isHidden(c.s)&&!isHidden(c.t)){if(shouldDimConn(c)){ctx.save();ctx.globalAlpha=0.15;drawConn(s,t,c.type);ctx.restore();}else{drawConn(s,t,c.type);}}}
+  for(const c of conns){const s=gn(c.s),t=gn(c.t);if(s&&t&&!isHidden(c.s)&&!isHidden(c.t))drawConn(s,t,c.type);}
   // ── Selected connection highlight + delete button ───────────────────
   if(selConnId){
     const sc2=conns.find(x=>x.id===selConnId);
@@ -1656,9 +1615,7 @@ function _render(){
   // 5) Creating frame preview
   if(creatingFrame&&frameStart){const fx=Math.min(frameStart.x,frameStart.ex||frameStart.x),fy=Math.min(frameStart.y,frameStart.ey||frameStart.y),fw=Math.abs((frameStart.ex||frameStart.x)-frameStart.x),fh=Math.abs((frameStart.ey||frameStart.y)-frameStart.y);if(fw>5||fh>5){ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5/scale;ctx.setLineDash([6/scale,4/scale]);ctx.strokeRect(fx,fy,fw,fh);ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(fx,fy,fw,fh);ctx.setLineDash([]);}}
   if(selRect){const{sx,sy,ex,ey}=selRect;ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.strokeRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.setLineDash([]);}
-  for(const n of nodes){if(isHidden(n.id))continue;const _dimF=shouldDimNode(n.id);const _dimT=activeTagFilter&&!(n.tags||[]).includes(activeTagFilter);if(_dimF||_dimT){ctx.save();ctx.globalAlpha=_dimF?0.15:0.18;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);}}
-  // Focus root highlight ring
-  if(isFocusActive()&&focusBranchRootId){const _fn=gn(focusBranchRootId);if(_fn&&!isHidden(_fn.id)){const _fc=branchColor(_fn);ctx.save();ctx.strokeStyle=_fc;ctx.lineWidth=3/scale;ctx.setLineDash([6/scale,3/scale]);const _fr=_fn.shape==='pill'?_fn.height/2+6:14;ctx.beginPath();ctx.roundRect(_fn.x-_fn.width/2-6,_fn.y-_fn.height/2-6,_fn.width+12,_fn.height+12,_fr);ctx.stroke();ctx.setLineDash([]);ctx.restore();}}
+  for(const n of nodes){if(isHidden(n.id))continue;if(activeTagFilter&&!(n.tags||[]).includes(activeTagFilter)){ctx.save();ctx.globalAlpha=.18;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);}}
   ctx.restore();
 }
 
@@ -1714,7 +1671,7 @@ function drawConn(src,tgt,type){
 
 function drawNode(n){
   const isSel=n.id===selId||selectedIds.has(n.id),isHov=n.id===hovId;
-  const col=branchColor(n);const isRoot=!n.parentId;const isPreview=previewColorsActive&&previewColorMap.has(n.id);
+  const col=branchColor(n);const isRoot=!n.parentId;const isPreview=(previewColorsActive&&previewColorMap.has(n.id))||previewBranchIds.has(n.id);
   let animScale=1,animOX=0,animOY=0;
   if(n._anim){animScale=n._anim.scale;animOX=n._anim.ox;animOY=n._anim.oy;}
   if(animScale<.01)return;
@@ -2425,8 +2382,21 @@ cv.addEventListener('mousemove',e=>{
   // Creating frame
   if(creatingFrame){frameStart.ex=wx;frameStart.ey=wy;render();return;}
   if(dragId){
-    const n=gn(dragId);if(n){const dx=wx-dragOX-n.x,dy=wy-dragOY-n.y;n.x+=dx;n.y+=dy;multiDragOffsets.forEach((off,sid)=>{if(sid!==dragId){const sn=gn(sid);if(sn){sn.x+=dx;sn.y+=dy;}}});}
+    const n=gn(dragId);
+    if(n){
+      const nx=wx-dragOX,ny=wy-dragOY,dx=nx-n.x,dy=ny-n.y;
+      if(selectedIds.size>1){
+        n.x=nx;n.y=ny;
+        multiDragOffsets.forEach((off,sid)=>{if(sid!==dragId){const sn=gn(sid);if(sn){sn.x=nx+off.dx;sn.y=ny+off.dy;}}});
+      }else if(isBranchMoveMode()&&dragBranchOffsets.size){
+        n.x=nx;n.y=ny;
+        dragBranchIds.forEach(id=>{if(id===dragId)return;const sn=gn(id),off=dragBranchOffsets.get(id);if(sn&&off){sn.x=nx+off.dx;sn.y=ny+off.dy;}});
+      }else{
+        n.x+=dx;n.y+=dy;
+      }
+    }
     dragOX=wx-gn(dragId).x;dragOY=wy-gn(dragId).y;
+    if(isBranchPreviewMode())setBranchPreview(dragId);
     // Reparent detection
     const dragDist=Math.hypot(wx-dragStartX,wy-dragStartY);
     if(dragDist>40){const candidate=nodeAt(wx,wy);if(candidate&&candidate.id!==dragId&&!isDescendantOf(candidate.id,dragId)){reparentTarget=candidate;}else{reparentTarget=null;}}
@@ -2435,7 +2405,17 @@ cv.addEventListener('mousemove',e=>{
   if(panning){const r=cwEl().getBoundingClientRect();viewX=e.clientX-r.left-panSX;viewY=e.clientY-HH-panSY;render();mmR();return;}
   if(connFrom){connMouse={x:wx,y:wy};render();return;}
   if(selRectStart){selRect={sx:selRectStart.x,sy:selRectStart.y,ex:wx,ey:wy};render();return;}
-  if(now-lastHov>25){lastHov=now;const n=nodeAt(wx,wy);const nid=n?n.id:null;if(nid!==hovId){hovId=nid;render();}if(n){if(onCollBtn(n,wx,wy))cv.style.cursor='pointer';else if(onEdge(n,wx,wy))cv.style.cursor='crosshair';else cv.style.cursor='grab';}else cv.style.cursor=(activeTool==='pan'||spaceDown)?'grab':'default';}
+  if(now-lastHov>25){
+    lastHov=now;const n=nodeAt(wx,wy);const nid=n?n.id:null;let needsRender=false;
+    if(nid!==hovId){hovId=nid;needsRender=true;}
+    if(isBranchPreviewMode()){
+      const nextIds=nid?new Set(collectBranchIds(nid)):new Set();
+      const same=nextIds.size===previewBranchIds.size&&[...nextIds].every(id=>previewBranchIds.has(id));
+      if(!same){previewBranchIds=nextIds;needsRender=true;}
+    }else if(previewBranchIds.size){clearBranchPreview();needsRender=true;}
+    if(needsRender)render();
+    if(n){if(onCollBtn(n,wx,wy))cv.style.cursor='pointer';else if(onEdge(n,wx,wy))cv.style.cursor='crosshair';else cv.style.cursor='grab';}else cv.style.cursor=(activeTool==='pan'||spaceDown)?'grab':'default';
+  }
 });
 
 cv.addEventListener('mousedown',e=>{
@@ -2528,11 +2508,17 @@ cv.addEventListener('mousedown',e=>{
     if(onEdge(n,wx,wy)){connFrom=n.id;connMouse={x:wx,y:wy};return;}
     dragId=n.id;dragOX=wx-n.x;dragOY=wy-n.y;
     dragStartX=wx;dragStartY=wy;
+    dragBranchIds=[];dragBranchOffsets.clear();
     selShapeId=null;selFrameId=null;
     if(e.shiftKey){selectedIds.has(n.id)?selectedIds.delete(n.id):selectedIds.add(n.id);}
     else{if(!selectedIds.has(n.id)){selId=n.id;selectedIds=new Set([n.id]);}}
     selId=n.id;hideShapeFtb();hideFrameFtb();
     multiDragOffsets.clear();selectedIds.forEach(sid=>{const sn=gn(sid);if(sn)multiDragOffsets.set(sid,{dx:sn.x-n.x,dy:sn.y-n.y});});
+    if(selectedIds.size<=1&&isBranchMoveMode()){
+      dragBranchIds=collectBranchIds(n.id);
+      dragBranchOffsets=buildBranchOffsets(n.id);
+    }
+    if(isBranchPreviewMode())setBranchPreview(n.id);else clearBranchPreview();
     render();posFtb();
   }else{
     commitEdit();
@@ -2593,7 +2579,8 @@ cv.addEventListener('mouseup',e=>{
     }
   }
   reparentTarget=null;
-  if(dragId)snap();dragId=null;panning=false;selRectStart=null;selRect=null;
+  if(dragId)snap();dragId=null;dragBranchIds=[];dragBranchOffsets.clear();panning=false;selRectStart=null;selRect=null;
+  if(isBranchPreviewMode()&&hovId)setBranchPreview(hovId);else clearBranchPreview();
 });
 
 cv.addEventListener('dblclick',e=>{
@@ -2623,6 +2610,7 @@ document.addEventListener('keydown',e=>{
   if(!skip&&(e.key==='f'||e.key==='F')&&!e.ctrlKey){fitView();return;}
   if(!skip&&(e.key==='v'||e.key==='V')){setTool('select');return;}
   if(!skip&&(e.key==='h'||e.key==='H')){setTool('pan');return;}
+  if(!skip&&(e.key==='b'||e.key==='B')&&!e.ctrlKey&&!e.metaKey){cycleMoveMode();return;}
   if(!skip&&(e.key==='t'||e.key==='T')&&!e.ctrlKey){openGallery();return;}
   if(!skip&&(e.key==='n'||e.key==='N')&&!e.ctrlKey){setTool('sticky');return;}
   if(!skip&&(e.key==='r'||e.key==='R')&&!e.ctrlKey){setTool('rect');return;}
@@ -2988,19 +2976,7 @@ function buildLayoutPopup(){
   layouts.forEach(l=>{
     const opt=document.createElement('div');opt.className='lopt';
     opt.innerHTML=l.svg+`<span>${l.label}</span>`;
-    opt.addEventListener('click',()=>{const layoutColorSnap=snapshotLayoutColors();l.fn();restoreLayoutColors(layoutColorSnap);closeLayoutPopup();render();mmR();if(rp.classList.contains('open')&&selId)renderColorRow(selId);});
-    popup.appendChild(opt);
-  });
-  // ── Partial layout (branch) section ──
-  const sep=document.createElement('div');sep.className='lopt-sep';sep.textContent='Layout branche';popup.appendChild(sep);
-  [{id:'p-radial',label:'Branche radial',type:'radial'},{id:'p-tree-h',label:'Branche →',type:'tree-h'},{id:'p-tree-v',label:'Branche ↓',type:'tree-v'},{id:'p-lr',label:'Branche G←→D',type:'lr'}].forEach(p=>{
-    const opt=document.createElement('div');opt.className='lopt partial';
-    opt.innerHTML=`<span style="font-size:16px">🌿</span><span>${p.label}</span>`;
-    opt.addEventListener('click',()=>{
-      const targetId=isFocusActive()?focusBranchRootId:selId;
-      if(!targetId){toast('Sélectionnez un nœud d\'abord','in');closeLayoutPopup();return;}
-      applyPartialLayout(targetId,p.type);closeLayoutPopup();toast('Layout branche appliqué','ok');
-    });
+    opt.addEventListener('click',()=>{l.fn();closeLayoutPopup();render();mmR();});
     popup.appendChild(opt);
   });
 }
@@ -3015,18 +2991,6 @@ function openLayoutPopup(){
 function closeLayoutPopup(){document.getElementById('layout-popup').classList.remove('open');}
 document.getElementById('btn-layout').addEventListener('click',e=>{e.stopPropagation();document.getElementById('layout-popup').classList.contains('open')?closeLayoutPopup():openLayoutPopup();});
 document.addEventListener('click',e=>{if(!document.getElementById('layout-popup').contains(e.target)&&e.target!==document.getElementById('btn-layout'))closeLayoutPopup();});
-
-// ── FOCUS BRANCH EVENTS ─────────────────────────────────────────────
-document.getElementById('btn-focus').addEventListener('click',()=>{
-  if(isFocusActive()){clearFocusBranch();toast('Focus désactivé','in');return;}
-  if(!selId){toast('Sélectionnez un nœud d\'abord','in');return;}
-  setFocusBranch(selId);toast('Focus activé sur la branche','ok');
-});
-document.getElementById('fb-focus').addEventListener('click',()=>{
-  if(isFocusActive()){clearFocusBranch();toast('Focus désactivé','in');return;}
-  if(!selId){toast('Sélectionnez un nœud d\'abord','in');return;}
-  setFocusBranch(selId);toast('Focus activé sur la branche','ok');
-});
 
 // ── MAP LINK PICKER ──────────────────────────────────────────────────
 function openMapLinkPicker(nodeId){
@@ -3064,6 +3028,8 @@ document.getElementById('rp-maplink-clear').addEventListener('click',()=>{const 
 function init(){
   loadColorMode();
   updateColorModeButton();
+  loadMoveMode();
+  updateMoveModeButton();
   resize();
   const loaded = autoLoad();
   if(!loaded){
