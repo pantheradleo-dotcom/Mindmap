@@ -614,6 +614,7 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <button class="fb" id="fb-url" title="Lien URL">🔗</button>
   <div class="fbsep"></div>
   <button class="fb" id="fb-coll" title="Replier/Déplier">◎</button>
+  <button class="fb" id="fb-selbranch" title="Sélectionner branche">⛏</button>
   <div class="fbsep"></div>
   <button class="fb" id="fb-focus" title="Focus branche">🎯</button>
   <div class="fbsep"></div>
@@ -2263,6 +2264,15 @@ document.getElementById('fb-edit').addEventListener('click',()=>{const id=selId;
 document.getElementById('fb-rp').addEventListener('click',()=>openRP(selId));
 document.getElementById('fb-url').addEventListener('click',()=>{if(!selId)return;const n=gn(selId);const p=w2c(n.x,n.y);const r=cwEl().getBoundingClientRect();showURLPop(selId,p.x+r.left,p.y);});
 document.getElementById('fb-coll').addEventListener('click',()=>toggleCollapse(selId));
+document.getElementById('fb-selbranch').addEventListener('click',()=>{
+  if(!selId)return;
+  // Select the node + all its descendants
+  const desc=getDescendantIds(selId);
+  desc.add(selId);
+  selectedIds=desc;
+  toast(selectedIds.size+' nœuds sélectionnés','ok');
+  render();posFtb();
+});
 document.getElementById('fb-del').addEventListener('click',()=>{if(selId){snap();rmNode(selId);selId=null;hideFtb();render();mmR();}})
 
 // ── Shape toolbar listeners ──────────────────────────────────────────
@@ -2558,7 +2568,11 @@ cv.addEventListener('mousedown',e=>{
     if(e.shiftKey){selectedIds.has(n.id)?selectedIds.delete(n.id):selectedIds.add(n.id);}
     else{if(!selectedIds.has(n.id)){selId=n.id;selectedIds=new Set([n.id]);}}
     selId=n.id;hideShapeFtb();hideFrameFtb();
-    multiDragOffsets.clear();selectedIds.forEach(sid=>{const sn=gn(sid);if(sn)multiDragOffsets.set(sid,{dx:sn.x-n.x,dy:sn.y-n.y});});
+    // Collect all nodes to drag: selected nodes + all their descendants (branch move)
+    multiDragOffsets.clear();
+    const dragSet=new Set(selectedIds);
+    selectedIds.forEach(sid=>{const desc=getDescendantIds(sid);desc.forEach(d=>dragSet.add(d));});
+    dragSet.forEach(sid=>{const sn=gn(sid);if(sn)multiDragOffsets.set(sid,{dx:sn.x-n.x,dy:sn.y-n.y});});
     render();posFtb();
   }else{
     commitEdit();
