@@ -1088,19 +1088,24 @@ function isDescendantOf(nodeId, ancestorId) {
 // ── FOCUS BRANCH HELPERS ────────────────────────────────────────────
 function getDescendantIds(rootId){
   const result=new Set();
+  // Compute ancestors of rootId to never traverse upward
+  const ancestors=new Set();
+  let _anc=gn(rootId);
+  while(_anc&&_anc.parentId){ancestors.add(_anc.parentId);_anc=gn(_anc.parentId);}
+  // BFS: follow kids (parentId) + ALL connections (both directions), skip ancestors
   const visited=new Set([rootId]);
   const queue=[rootId];
   while(queue.length){
     const id=queue.shift();
     // Via parentId hierarchy
     kids(id).forEach(c=>{if(!visited.has(c.id)){visited.add(c.id);result.add(c.id);queue.push(c.id);}});
-    // Via connections s→t (parent→child canonical direction)
+    // Via connections — both directions, but never go into ancestors
     conns.forEach(c=>{
-      if(c.s===id&&!visited.has(c.t)){visited.add(c.t);result.add(c.t);queue.push(c.t);}
-      if(c.t===id&&!visited.has(c.s)){
-        // Also check reverse direction: if s has parentId===id, it's a child
-        const sn=gn(c.s);
-        if(sn&&sn.parentId===id){visited.add(c.s);result.add(c.s);queue.push(c.s);}
+      let other=null;
+      if(c.s===id)other=c.t;
+      else if(c.t===id)other=c.s;
+      if(other&&!visited.has(other)&&!ancestors.has(other)){
+        visited.add(other);result.add(other);queue.push(other);
       }
     });
   }
