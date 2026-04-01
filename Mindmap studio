@@ -400,6 +400,9 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
 }
 .lopt:hover { border-color: var(--acc); color: var(--acc); background: rgba(91,106,240,.06); }
 .lopt svg { width: 40px; height: 32px; }
+.lopt.partial{border-style:dashed;}
+.lopt-sep{grid-column:1/-1;font-size:10px;font-weight:600;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px;padding:6px 0 2px;border-top:1px solid var(--brd);margin-top:2px;}
+#btn-focus.active{background:var(--acc);border-color:transparent;color:#fff;}
 </style>
 </head>
 <body>
@@ -422,6 +425,7 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <button class="hbtn pri" id="btn-templates">📋 Templates</button>
   <button class="hbtn" id="btn-layout">⬡ Layout</button>
   <div id="layout-popup"></div>
+  <button class="hbtn" id="btn-focus" title="Focus sur une branche">🎯 Focus</button>
   <button class="hbtn" id="btn-tags">🏷 Tags</button>
   <div class="hsep"></div>
   <button class="hbtn" id="btn-palette">🎨 <span id="pal-name">Défaut</span></button>
@@ -611,6 +615,8 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <div class="fbsep"></div>
   <button class="fb" id="fb-coll" title="Replier/Déplier">◎</button>
   <div class="fbsep"></div>
+  <button class="fb" id="fb-focus" title="Focus branche">🎯</button>
+  <div class="fbsep"></div>
   <button class="fb danger" id="fb-del" title="Supprimer (Suppr)">✕</button>
 </div>
 
@@ -741,6 +747,9 @@ let isDark=false,currentTheme='default';
 let activeTagFilter=null,allTags=[];
 let collapseAnim={};
 let clipboard=null;
+// ── FOCUS BRANCH STATE ──────────────────────────────────────────────
+let focusBranchRootId=null;
+let focusBranchIds=new Set();
 // ── SHAPES & FRAMES ─────────────────────────────────────────────────────
 let shapes=[];
 let frames=[];
@@ -1076,6 +1085,43 @@ function isDescendantOf(nodeId, ancestorId) {
   return false;
 }
 
+// ── FOCUS BRANCH HELPERS ────────────────────────────────────────────
+function getDescendantIds(rootId){
+  const result=new Set();
+  const queue=[rootId];
+  while(queue.length){const id=queue.shift();kids(id).forEach(c=>{result.add(c.id);queue.push(c.id);});}
+  return result;
+}
+function collectBranchIds(rootId){
+  const ids=getDescendantIds(rootId);
+  ids.add(rootId);
+  // Add ancestor chain up to global root for path visibility
+  let cur=gn(rootId);
+  while(cur&&cur.parentId){ids.add(cur.parentId);cur=gn(cur.parentId);}
+  return ids;
+}
+function setFocusBranch(rootId){
+  if(!rootId||!gn(rootId))return;
+  focusBranchRootId=rootId;
+  focusBranchIds=collectBranchIds(rootId);
+  document.getElementById('btn-focus').textContent='✕ Quitter focus';
+  document.getElementById('btn-focus').classList.add('active');
+  render();mmR();
+}
+function clearFocusBranch(){
+  focusBranchRootId=null;
+  focusBranchIds=new Set();
+  document.getElementById('btn-focus').textContent='🎯 Focus';
+  document.getElementById('btn-focus').classList.remove('active');
+  render();mmR();
+}
+function isFocusActive(){
+  if(focusBranchRootId&&!gn(focusBranchRootId)){focusBranchRootId=null;focusBranchIds=new Set();document.getElementById('btn-focus').textContent='🎯 Focus';document.getElementById('btn-focus').classList.remove('active');}
+  return focusBranchRootId!==null;
+}
+function shouldDimNode(nid){return isFocusActive()&&!focusBranchIds.has(nid);}
+function shouldDimConn(conn){return isFocusActive()&&(!focusBranchIds.has(conn.s)||!focusBranchIds.has(conn.t));}
+
 // ── LAYOUT ALGORITHMS ────────────────────────────────────────────────
 function layoutTreeH() {
   attachOrphans();
@@ -1263,6 +1309,79 @@ function layoutLR() {
   }
   placeSide(right, 1);
   placeSide(left, -1);
+}
+
+// ── PARTIAL LAYOUT (branch only) ────────────────────────────────────
+function applyPartialLayout(rootId,layoutType){
+  const root=gn(rootId);if(!root)return;
+  // Collect branch node IDs
+  const brIds=new Set();brIds.add(rootId);
+  function collectD(id){kids(id).forEach(c=>{brIds.add(c.id);collectD(c.id);});}
+  collectD(rootId);
+  // Snapshot colors
+  const colorSnap=snapshotLayoutColors();
+  // Anchor position
+  const ax=root.x,ay=root.y;
+  snap();
+  // Count leaves within branch
+  function cntL(id){const ch=kids(id).filter(c=>brIds.has(c.id));return ch.length?ch.reduce((s,c)=>s+cntL(c.id),0):1;}
+
+  if(layoutType==='radial'){
+    (function plR(nid,d,sa,as){
+      const ch=kids(nid).filter(c=>brIds.has(c.id));if(!ch.length)return;
+      const r2=160+d*130;
+      const lv=ch.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+      const totalAng=Math.min(Math.PI*2,Math.max(as,tot*0.45));
+      let curAng=sa-totalAng/2;
+      ch.forEach((c,i)=>{const share=(lv[i]/tot)*totalAng;const a=curAng+share/2;
+        c.x=gn(nid).x+Math.cos(a)*r2;c.y=gn(nid).y+Math.sin(a)*r2;
+        plR(c.id,d+1,a,share);curAng+=share;});
+    })(rootId,0,-Math.PI/2,Math.PI*2);
+  } else if(layoutType==='tree-h'){
+    const xG=220,yG=75;
+    (function place(id,depth,yC){
+      const n=gn(id);if(!n)return;n.x=ax+depth*xG;n.y=yC;
+      const ch=kids(id).filter(c=>brIds.has(c.id));if(!ch.length)return;
+      const lv=ch.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+      let curY=yC-(tot-1)*yG/2;
+      ch.forEach((c,i)=>{place(c.id,depth+1,curY+lv[i]*yG/2);curY+=lv[i]*yG;});
+    })(rootId,0,ay);
+  } else if(layoutType==='tree-v'){
+    const yG=140,xG=190;
+    (function place(id,depth,xC){
+      const n=gn(id);if(!n)return;n.x=xC;n.y=ay+depth*yG;
+      const ch=kids(id).filter(c=>brIds.has(c.id));if(!ch.length)return;
+      const lv=ch.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+      let curX=xC-(tot-1)*xG/2;
+      ch.forEach((c,i)=>{place(c.id,depth+1,curX+lv[i]*xG/2);curX+=lv[i]*xG;});
+    })(rootId,0,ax);
+  } else if(layoutType==='lr'){
+    const ch=kids(rootId).filter(c=>brIds.has(c.id));
+    const sorted=[...ch].sort((a,b)=>cntL(b.id)-cntL(a.id));
+    const right2=[],left2=[];
+    sorted.forEach((n,i)=>{if(i%2===0)right2.push(n);else left2.push(n);});
+    const yG=75,xS=190;
+    function plB(id,px,py,dir){const n=gn(id);if(!n)return;n.x=px;n.y=py;
+      const ch2=kids(id).filter(c=>brIds.has(c.id));if(!ch2.length)return;
+      const lv=ch2.map(c=>cntL(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+      let curY=py-(tot-1)*yG/2;
+      ch2.forEach((c,i)=>{plB(c.id,px+dir*xS,curY+lv[i]*yG/2,dir);curY+=lv[i]*yG;});}
+    function plS(list,dir){const lv=list.map(n=>cntL(n.id));const tot=lv.reduce((a,b)=>a+b,0);
+      let curY=ay-(tot-1)*yG/2;
+      list.forEach((bn,i)=>{plB(bn.id,ax+dir*210,curY+lv[i]*yG/2,dir);curY+=lv[i]*yG;});}
+    plS(right2,1);plS(left2,-1);
+  }
+  // Collision relaxation within branch only
+  const bNodes=nodes.filter(n=>brIds.has(n.id));
+  for(let it=0;it<50;it++){for(let i=0;i<bNodes.length;i++){for(let j=i+1;j<bNodes.length;j++){
+    const a=bNodes[i],b=bNodes[j];const dx=b.x-a.x,dy=b.y-a.y,dist=Math.hypot(dx,dy)||1;
+    const minD=(a.width+b.width)/2+55;
+    if(dist<minD){const push=(minD-dist)/2*0.5;
+      if(a.id!==rootId){a.x-=(dx/dist)*push;a.y-=(dy/dist)*push;}
+      if(b.id!==rootId){b.x+=(dx/dist)*push;b.y+=(dy/dist)*push;}}}}}
+  // Restore colors
+  restoreLayoutColors(colorSnap);
+  render();mmR();
 }
 
 // ── SHAPE HELPERS ────────────────────────────────────────────────────
@@ -1505,7 +1624,7 @@ function _render(){
   // 2) Shapes
   for(const s of shapes) drawShape(s);
   // 3) Connections
-  for(const c of conns){const s=gn(c.s),t=gn(c.t);if(s&&t&&!isHidden(c.s)&&!isHidden(c.t))drawConn(s,t,c.type);}
+  for(const c of conns){const s=gn(c.s),t=gn(c.t);if(s&&t&&!isHidden(c.s)&&!isHidden(c.t)){if(shouldDimConn(c)){ctx.save();ctx.globalAlpha=0.15;drawConn(s,t,c.type);ctx.restore();}else{drawConn(s,t,c.type);}}}
   // ── Selected connection highlight + delete button ───────────────────
   if(selConnId){
     const sc2=conns.find(x=>x.id===selConnId);
@@ -1537,7 +1656,9 @@ function _render(){
   // 5) Creating frame preview
   if(creatingFrame&&frameStart){const fx=Math.min(frameStart.x,frameStart.ex||frameStart.x),fy=Math.min(frameStart.y,frameStart.ey||frameStart.y),fw=Math.abs((frameStart.ex||frameStart.x)-frameStart.x),fh=Math.abs((frameStart.ey||frameStart.y)-frameStart.y);if(fw>5||fh>5){ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5/scale;ctx.setLineDash([6/scale,4/scale]);ctx.strokeRect(fx,fy,fw,fh);ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(fx,fy,fw,fh);ctx.setLineDash([]);}}
   if(selRect){const{sx,sy,ex,ey}=selRect;ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.strokeRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.setLineDash([]);}
-  for(const n of nodes){if(isHidden(n.id))continue;if(activeTagFilter&&!(n.tags||[]).includes(activeTagFilter)){ctx.save();ctx.globalAlpha=.18;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);}}
+  for(const n of nodes){if(isHidden(n.id))continue;const _dimF=shouldDimNode(n.id);const _dimT=activeTagFilter&&!(n.tags||[]).includes(activeTagFilter);if(_dimF||_dimT){ctx.save();ctx.globalAlpha=_dimF?0.15:0.18;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);}}
+  // Focus root highlight ring
+  if(isFocusActive()&&focusBranchRootId){const _fn=gn(focusBranchRootId);if(_fn&&!isHidden(_fn.id)){const _fc=branchColor(_fn);ctx.save();ctx.strokeStyle=_fc;ctx.lineWidth=3/scale;ctx.setLineDash([6/scale,3/scale]);const _fr=_fn.shape==='pill'?_fn.height/2+6:14;ctx.beginPath();ctx.roundRect(_fn.x-_fn.width/2-6,_fn.y-_fn.height/2-6,_fn.width+12,_fn.height+12,_fr);ctx.stroke();ctx.setLineDash([]);ctx.restore();}}
   ctx.restore();
 }
 
@@ -2870,6 +2991,18 @@ function buildLayoutPopup(){
     opt.addEventListener('click',()=>{const layoutColorSnap=snapshotLayoutColors();l.fn();restoreLayoutColors(layoutColorSnap);closeLayoutPopup();render();mmR();if(rp.classList.contains('open')&&selId)renderColorRow(selId);});
     popup.appendChild(opt);
   });
+  // ── Partial layout (branch) section ──
+  const sep=document.createElement('div');sep.className='lopt-sep';sep.textContent='Layout branche';popup.appendChild(sep);
+  [{id:'p-radial',label:'Branche radial',type:'radial'},{id:'p-tree-h',label:'Branche →',type:'tree-h'},{id:'p-tree-v',label:'Branche ↓',type:'tree-v'},{id:'p-lr',label:'Branche G←→D',type:'lr'}].forEach(p=>{
+    const opt=document.createElement('div');opt.className='lopt partial';
+    opt.innerHTML=`<span style="font-size:16px">🌿</span><span>${p.label}</span>`;
+    opt.addEventListener('click',()=>{
+      const targetId=isFocusActive()?focusBranchRootId:selId;
+      if(!targetId){toast('Sélectionnez un nœud d\'abord','in');closeLayoutPopup();return;}
+      applyPartialLayout(targetId,p.type);closeLayoutPopup();toast('Layout branche appliqué','ok');
+    });
+    popup.appendChild(opt);
+  });
 }
 function openLayoutPopup(){
   buildLayoutPopup();
@@ -2882,6 +3015,18 @@ function openLayoutPopup(){
 function closeLayoutPopup(){document.getElementById('layout-popup').classList.remove('open');}
 document.getElementById('btn-layout').addEventListener('click',e=>{e.stopPropagation();document.getElementById('layout-popup').classList.contains('open')?closeLayoutPopup():openLayoutPopup();});
 document.addEventListener('click',e=>{if(!document.getElementById('layout-popup').contains(e.target)&&e.target!==document.getElementById('btn-layout'))closeLayoutPopup();});
+
+// ── FOCUS BRANCH EVENTS ─────────────────────────────────────────────
+document.getElementById('btn-focus').addEventListener('click',()=>{
+  if(isFocusActive()){clearFocusBranch();toast('Focus désactivé','in');return;}
+  if(!selId){toast('Sélectionnez un nœud d\'abord','in');return;}
+  setFocusBranch(selId);toast('Focus activé sur la branche','ok');
+});
+document.getElementById('fb-focus').addEventListener('click',()=>{
+  if(isFocusActive()){clearFocusBranch();toast('Focus désactivé','in');return;}
+  if(!selId){toast('Sélectionnez un nœud d\'abord','in');return;}
+  setFocusBranch(selId);toast('Focus activé sur la branche','ok');
+});
 
 // ── MAP LINK PICKER ──────────────────────────────────────────────────
 function openMapLinkPicker(nodeId){
