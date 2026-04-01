@@ -400,6 +400,10 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
 }
 .lopt:hover { border-color: var(--acc); color: var(--acc); background: rgba(91,106,240,.06); }
 .lopt svg { width: 40px; height: 32px; }
+/* ── FOCUS BRANCH ── */
+.hbtn.focus-on{background:rgba(91,106,240,.14);border-color:var(--acc);color:var(--acc);}
+.lopt.branch-layout{grid-column:1/-1;background:rgba(91,106,240,.06);border-color:var(--acc);color:var(--acc);}
+.lopt.branch-layout:hover{background:rgba(91,106,240,.12);}
 </style>
 </head>
 <body>
@@ -420,6 +424,7 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <div class="hsep"></div>
   <button class="hbtn" id="btn-maps">🗂 Mes cartes</button>
   <button class="hbtn pri" id="btn-templates">📋 Templates</button>
+  <button class="hbtn" id="btn-focus" title="Focus sur la branche du nœud sélectionné">🔍 Focus branche</button>
   <button class="hbtn" id="btn-layout">⬡ Layout</button>
   <div id="layout-popup"></div>
   <button class="hbtn" id="btn-move-mode" title="Modes : Simple / Branche / Branche+ • Raccourci : B">Déplacement : Simple</button>
@@ -757,6 +762,9 @@ let selFrameId=null, dragFrameId=null;
 let creatingFrame=false, frameStart={x:0,y:0};
 let frameColors=['#5b6af0','#2cb67d','#f0a500','#f06464','#a855f7','#0ea5e9'], frameColorIdx=0;
 // ── REPARENT ─────────────────────────────────────────────────────────────
+// ── FOCUS BRANCH STATE ──────────────────────────────────────────────
+let focusBranchRootId=null;
+let focusBranchIds=new Set();
 let reparentTarget=null;
 let dragStartX=0, dragStartY=0;
 // ── MULTI-MAP STORAGE ────────────────────────────────────────────────────
@@ -792,7 +800,7 @@ function snap(){
 }
 function undo(){if(histIdx<=0)return;histIdx--;restore(hist[histIdx]);}
 function redo(){if(histIdx>=hist.length-1)return;histIdx++;restore(hist[histIdx]);}
-function restore(s){const d=JSON.parse(s);nodes=d.nodes;conns=d.conns;shapes=d.shapes||[];frames=d.frames||[];selId=null;selShapeId=null;selFrameId=null;selectedIds.clear();hideFtb();rebuildTags();render();mmR();}
+function restore(s){const d=JSON.parse(s);nodes=d.nodes;conns=d.conns;shapes=d.shapes||[];frames=d.frames||[];selId=null;selShapeId=null;selFrameId=null;selectedIds.clear();clearFocusBranch();const fb=document.getElementById('btn-focus');if(fb){fb.textContent='🔍 Focus branche';fb.classList.remove('focus-on');}hideFtb();rebuildTags();render();mmR();}
 
 function autoSave() {
   if(!currentMapId) return;
@@ -958,6 +966,109 @@ function getDescendantIds(rootId){
   return out;
 }
 function collectBranchIds(rootId){return [rootId,...getDescendantIds(rootId)];}
+
+// ── FOCUS BRANCH HELPERS ────────────────────────────────────────────
+function setFocusBranch(rootId){
+  if(!rootId||!gn(rootId)){focusBranchRootId=null;focusBranchIds.clear();return;}
+  focusBranchRootId=rootId;
+  focusBranchIds=new Set(collectBranchIds(rootId));
+  // Also include ancestor path up to global root
+  let cur=gn(rootId);
+  while(cur&&cur.parentId){focusBranchIds.add(cur.parentId);cur=gn(cur.parentId);}
+}
+function clearFocusBranch(){focusBranchRootId=null;focusBranchIds.clear();}
+function isFocusActive(){return focusBranchRootId!==null&&focusBranchIds.size>0;}
+function shouldDimNode(nodeId){return isFocusActive()&&!focusBranchIds.has(nodeId);}
+function shouldDimConn(conn){return isFocusActive()&&(!focusBranchIds.has(conn.s)||!focusBranchIds.has(conn.t));}
+
+// ── PARTIAL LAYOUT (branch only) ────────────────────────────────────
+function applyPartialLayout(rootId, layoutType){
+  const root=gn(rootId);if(!root)return;
+  // Snapshot appearance of branch nodes to restore after layout
+  const branchIds=collectBranchIds(rootId);
+  const savedProps={};
+  branchIds.forEach(id=>{const n=gn(id);if(n)savedProps[id]={color:n.color,fillColor:n.fillColor,connStyle:n.connStyle,tags:n.tags?[...n.tags]:[],'emoji':n.emoji,note:n.note,url:n.url,shape:n.shape,collapsed:n.collapsed,mapLink:n.mapLink};});
+  // Anchor position: root stays in place
+  const anchorX=root.x, anchorY=root.y;
+  // Compute branch positions based on layoutType
+  if(layoutType==='radial') partialRadial(rootId);
+  else if(layoutType==='tree-h') partialTreeH(rootId);
+  else if(layoutType==='tree-v') partialTreeV(rootId);
+  else if(layoutType==='lr') partialLR(rootId);
+  else partialRadial(rootId);
+  // Shift branch so root returns to anchor
+  const dx=anchorX-root.x, dy=anchorY-root.y;
+  branchIds.forEach(id=>{const n=gn(id);if(n){n.x+=dx;n.y+=dy;}});
+  // Restore all non-positional properties
+  branchIds.forEach(id=>{const n=gn(id);const s=savedProps[id];if(n&&s){n.color=s.color;n.fillColor=s.fillColor;n.connStyle=s.connStyle;n.tags=s.tags;n.emoji=s.emoji;n.note=s.note;n.url=s.url;n.shape=s.shape;n.collapsed=s.collapsed;n.mapLink=s.mapLink;}});
+  // Collision relaxation within branch only
+  for(let it=0;it<40;it++){for(let i=0;i<branchIds.length;i++){for(let j=i+1;j<branchIds.length;j++){const a=gn(branchIds[i]),b=gn(branchIds[j]);if(!a||!b)continue;const ddx=b.x-a.x,ddy=b.y-a.y,dist=Math.hypot(ddx,ddy)||1;const minD=(a.width+b.width)/2+50;if(dist<minD){const push=(minD-dist)/2*.4;if(a.id!==rootId){a.x-=(ddx/dist)*push;a.y-=(ddy/dist)*push;}if(b.id!==rootId){b.x+=(ddx/dist)*push;b.y+=(ddy/dist)*push;}}}}}
+}
+function partialRadial(rootId){
+  const root=gn(rootId);if(!root)return;
+  function countLeaves(id){const ch=kids(id);return ch.length?ch.reduce((s,c)=>s+countLeaves(c.id),0):1;}
+  function pl(nid,d,sa,as){
+    const ch=kids(nid);if(!ch.length)return;
+    const r2=140+d*110;
+    const lv=ch.map(c=>countLeaves(c.id));
+    const tot=lv.reduce((a,b)=>a+b,0);
+    const totalAng=Math.min(Math.PI*2,Math.max(as,tot*0.45));
+    let curAng=sa-totalAng/2;
+    ch.forEach((c,i)=>{const share=(lv[i]/tot)*totalAng;const a=curAng+share/2;c.x=gn(nid).x+Math.cos(a)*r2;c.y=gn(nid).y+Math.sin(a)*r2;pl(c.id,d+1,a,share);curAng+=share;});
+  }
+  pl(root.id,0,-Math.PI/2,Math.PI*2);
+}
+function partialTreeH(rootId){
+  const root=gn(rootId);if(!root)return;
+  function countLeaves(id){const ch=kids(id);return ch.length?ch.reduce((s,c)=>s+countLeaves(c.id),0):1;}
+  const xGap=200, yGap=70;
+  function place(id,depth,yCenter){
+    const n=gn(id);if(!n)return;
+    n.x=root.x+depth*xGap;n.y=yCenter;
+    const ch=kids(id);if(!ch.length)return;
+    const lv=ch.map(c=>countLeaves(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+    let curY=yCenter-(tot-1)*yGap/2;
+    ch.forEach((c,i)=>{place(c.id,depth+1,curY+lv[i]*yGap/2);curY+=lv[i]*yGap;});
+  }
+  place(root.id,0,root.y);
+}
+function partialTreeV(rootId){
+  const root=gn(rootId);if(!root)return;
+  function countLeaves(id){const ch=kids(id);return ch.length?ch.reduce((s,c)=>s+countLeaves(c.id),0):1;}
+  const yGap=120, xGap=170;
+  function place(id,depth,xCenter){
+    const n=gn(id);if(!n)return;
+    n.x=xCenter;n.y=root.y+depth*yGap;
+    const ch=kids(id);if(!ch.length)return;
+    const lv=ch.map(c=>countLeaves(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+    let curX=xCenter-(tot-1)*xGap/2;
+    ch.forEach((c,i)=>{place(c.id,depth+1,curX+lv[i]*xGap/2);curX+=lv[i]*xGap;});
+  }
+  place(root.id,0,root.x);
+}
+function partialLR(rootId){
+  const root=gn(rootId);if(!root)return;
+  const ch=kids(root.id);
+  function countLeaves(id){const c2=kids(id);return c2.length?c2.reduce((s,x)=>s+countLeaves(x.id),0):1;}
+  const sorted=[...ch].sort((a,b)=>countLeaves(b.id)-countLeaves(a.id));
+  const right=[],left=[];
+  sorted.forEach((n,i)=>{if(i%2===0)right.push(n);else left.push(n);});
+  function placeBranch(id,px,py,dir){
+    const n=gn(id);if(!n)return;n.x=px;n.y=py;
+    const ch2=kids(id);if(!ch2.length)return;
+    const lv=ch2.map(c=>countLeaves(c.id));const tot=lv.reduce((a,b)=>a+b,0);
+    const yGap=70,xStep=175;
+    let curY=py-(tot-1)*yGap/2;
+    ch2.forEach((c,i)=>{placeBranch(c.id,px+dir*xStep,curY+lv[i]*yGap/2,dir);curY+=lv[i]*yGap;});
+  }
+  function placeSide(list,dir){
+    const lv=list.map(n=>countLeaves(n.id));const tot=lv.reduce((a,b)=>a+b,0);
+    const yGap=70;let curY=root.y-(tot-1)*yGap/2;
+    list.forEach((bn,i)=>{placeBranch(bn.id,root.x+dir*190,curY+lv[i]*yGap/2,dir);curY+=lv[i]*yGap;});
+  }
+  placeSide(right,1);placeSide(left,-1);
+}
+
 function buildBranchOffsets(rootId){
   const root=gn(rootId), offsets=new Map();
   if(!root)return offsets;
@@ -1582,8 +1693,8 @@ function _render(){
   for(const f of frames) drawFrame(f);
   // 2) Shapes
   for(const s of shapes) drawShape(s);
-  // 3) Connections
-  for(const c of conns){const s=gn(c.s),t=gn(c.t);if(s&&t&&!isHidden(c.s)&&!isHidden(c.t))drawConn(s,t,c.type);}
+  // 3) Connections (dim if focus active and connection is outside branch)
+  for(const c of conns){const s=gn(c.s),t=gn(c.t);if(s&&t&&!isHidden(c.s)&&!isHidden(c.t)){if(shouldDimConn(c)){ctx.save();ctx.globalAlpha=0.12;drawConn(s,t,c.type);ctx.restore();}else{drawConn(s,t,c.type);}}}
   // ── Selected connection highlight + delete button ───────────────────
   if(selConnId){
     const sc2=conns.find(x=>x.id===selConnId);
@@ -1615,7 +1726,7 @@ function _render(){
   // 5) Creating frame preview
   if(creatingFrame&&frameStart){const fx=Math.min(frameStart.x,frameStart.ex||frameStart.x),fy=Math.min(frameStart.y,frameStart.ey||frameStart.y),fw=Math.abs((frameStart.ex||frameStart.x)-frameStart.x),fh=Math.abs((frameStart.ey||frameStart.y)-frameStart.y);if(fw>5||fh>5){ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5/scale;ctx.setLineDash([6/scale,4/scale]);ctx.strokeRect(fx,fy,fw,fh);ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(fx,fy,fw,fh);ctx.setLineDash([]);}}
   if(selRect){const{sx,sy,ex,ey}=selRect;ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.strokeRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.setLineDash([]);}
-  for(const n of nodes){if(isHidden(n.id))continue;if(activeTagFilter&&!(n.tags||[]).includes(activeTagFilter)){ctx.save();ctx.globalAlpha=.18;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);}}
+  for(const n of nodes){if(isHidden(n.id))continue;const dimTag=activeTagFilter&&!(n.tags||[]).includes(activeTagFilter);const dimFocus=shouldDimNode(n.id);if(dimTag||dimFocus){ctx.save();ctx.globalAlpha=dimTag?0.18:0.22;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);if(isFocusActive()&&n.id===focusBranchRootId){ctx.save();const col=branchColor(n);ctx.beginPath();ctx.roundRect(n.x-n.width/2-5,n.y-n.height/2-5,n.width+10,n.height+10,(n.shape==='pill'?n.height/2+5:13));ctx.strokeStyle=col;ctx.lineWidth=2.5/scale;ctx.setLineDash([5/scale,3/scale]);ctx.stroke();ctx.setLineDash([]);ctx.restore();}}}
   ctx.restore();
 }
 
@@ -2979,6 +3090,23 @@ function buildLayoutPopup(){
     opt.addEventListener('click',()=>{l.fn();closeLayoutPopup();render();mmR();});
     popup.appendChild(opt);
   });
+  // ── Partial layout (branch only) separator + options ──
+  const targetId=isFocusActive()?focusBranchRootId:selId;
+  const targetNode=gn(targetId);
+  if(targetNode){
+    const branchLayouts=[
+      {id:'radial',label:'Branche : Radial'},
+      {id:'tree-h',label:'Branche : Arbre →'},
+      {id:'tree-v',label:'Branche : Arbre ↓'},
+      {id:'lr',label:'Branche : G←→D'},
+    ];
+    branchLayouts.forEach(bl=>{
+      const opt=document.createElement('div');opt.className='lopt branch-layout';
+      opt.innerHTML=`<svg viewBox="0 0 40 32"><circle cx="14" cy="16" r="4" fill="currentColor" opacity=".9"/><circle cx="28" cy="8" r="2.5" fill="currentColor" opacity=".5"/><circle cx="28" cy="24" r="2.5" fill="currentColor" opacity=".5"/><line x1="14" y1="16" x2="26" y2="9" stroke="currentColor" stroke-width="1.2" opacity=".5"/><line x1="14" y1="16" x2="26" y2="23" stroke="currentColor" stroke-width="1.2" opacity=".5"/><rect x="1" y="13" width="5" height="6" rx="1.5" fill="currentColor" opacity=".2"/></svg><span>${bl.label}</span>`;
+      opt.addEventListener('click',()=>{snap();applyPartialLayout(targetId,bl.id);closeLayoutPopup();render();mmR();toast('Layout branche appliqué','ok');});
+      popup.appendChild(opt);
+    });
+  }
 }
 function openLayoutPopup(){
   buildLayoutPopup();
@@ -2991,6 +3119,24 @@ function openLayoutPopup(){
 function closeLayoutPopup(){document.getElementById('layout-popup').classList.remove('open');}
 document.getElementById('btn-layout').addEventListener('click',e=>{e.stopPropagation();document.getElementById('layout-popup').classList.contains('open')?closeLayoutPopup():openLayoutPopup();});
 document.addEventListener('click',e=>{if(!document.getElementById('layout-popup').contains(e.target)&&e.target!==document.getElementById('btn-layout'))closeLayoutPopup();});
+
+// ── FOCUS BRANCH BUTTON ─────────────────────────────────────────────
+document.getElementById('btn-focus').addEventListener('click',()=>{
+  const btn=document.getElementById('btn-focus');
+  if(isFocusActive()){
+    clearFocusBranch();
+    btn.textContent='🔍 Focus branche';
+    btn.classList.remove('focus-on');
+    toast('Focus désactivé','in');
+  }else{
+    if(!selId){toast('Sélectionnez un nœud d\'abord','in');return;}
+    setFocusBranch(selId);
+    btn.textContent='✕ Quitter focus';
+    btn.classList.add('focus-on');
+    toast('Focus sur la branche','ok');
+  }
+  render();mmR();
+});
 
 // ── MAP LINK PICKER ──────────────────────────────────────────────────
 function openMapLinkPicker(nodeId){
