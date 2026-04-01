@@ -1088,8 +1088,22 @@ function isDescendantOf(nodeId, ancestorId) {
 // ── FOCUS BRANCH HELPERS ────────────────────────────────────────────
 function getDescendantIds(rootId){
   const result=new Set();
+  const visited=new Set([rootId]);
   const queue=[rootId];
-  while(queue.length){const id=queue.shift();kids(id).forEach(c=>{result.add(c.id);queue.push(c.id);});}
+  while(queue.length){
+    const id=queue.shift();
+    // Via parentId hierarchy
+    kids(id).forEach(c=>{if(!visited.has(c.id)){visited.add(c.id);result.add(c.id);queue.push(c.id);}});
+    // Via connections s→t (parent→child canonical direction)
+    conns.forEach(c=>{
+      if(c.s===id&&!visited.has(c.t)){visited.add(c.t);result.add(c.t);queue.push(c.t);}
+      if(c.t===id&&!visited.has(c.s)){
+        // Also check reverse direction: if s has parentId===id, it's a child
+        const sn=gn(c.s);
+        if(sn&&sn.parentId===id){visited.add(c.s);result.add(c.s);queue.push(c.s);}
+      }
+    });
+  }
   return result;
 }
 function collectBranchIds(rootId){
@@ -1097,7 +1111,14 @@ function collectBranchIds(rootId){
   ids.add(rootId);
   // Add ancestor chain up to global root for path visibility
   let cur=gn(rootId);
-  while(cur&&cur.parentId){ids.add(cur.parentId);cur=gn(cur.parentId);}
+  const seen=new Set([rootId]);
+  while(cur){
+    if(cur.parentId&&!seen.has(cur.parentId)){seen.add(cur.parentId);ids.add(cur.parentId);cur=gn(cur.parentId);continue;}
+    // Fallback: find parent via conns (t→s direction where s is parent)
+    const parentConn=conns.find(c=>c.t===cur.id&&!seen.has(c.s));
+    if(parentConn){seen.add(parentConn.s);ids.add(parentConn.s);cur=gn(parentConn.s);continue;}
+    break;
+  }
   return ids;
 }
 function setFocusBranch(rootId){
