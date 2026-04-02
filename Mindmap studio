@@ -424,6 +424,7 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <div class="hsep"></div>
   <button class="hbtn" id="btn-maps">🗂 Mes cartes</button>
   <button class="hbtn pri" id="btn-templates">📋 Templates</button>
+  <button class="hbtn" id="btn-analyse-tpl" title="Nouveau depuis un template d'analyse">🔎 Analyse</button>
   <button class="hbtn" id="btn-focus" title="Focus sur la branche du nœud sélectionné">🔍 Focus branche</button>
   <button class="hbtn" id="btn-layout">⬡ Layout</button>
   <div id="layout-popup"></div>
@@ -451,6 +452,24 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <span style="font-size:11px;font-weight:600;color:var(--txt3)">Filtrer :</span>
   <div id="tfchips"></div>
   <button id="tag-filter-close">✕ Fermer</button>
+</div>
+
+<!-- ══ ANALYSIS TEMPLATE POPUP ══ -->
+<div id="analyse-tpl-popup" style="position:fixed;top:calc(var(--hh)+4px);left:50%;transform:translateX(-50%);background:var(--surf);border:1.5px solid var(--brd);border-radius:12px;padding:14px 18px;z-index:400;display:none;min-width:240px;box-shadow:var(--shadow2);">
+  <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--txt);">Nouveau depuis template</div>
+  <div id="analyse-tpl-list" style="display:flex;flex-direction:column;gap:5px;"></div>
+</div>
+
+<!-- ══ ANALYSIS FILTER BAR ══ -->
+<div id="analyse-filter-bar" style="display:none;align-items:center;gap:8px;padding:5px 10px;background:var(--surf2);border-bottom:1px solid var(--brd);position:fixed;top:var(--hh);left:var(--sbw);right:0;z-index:149;flex-wrap:wrap;">
+  <span style="font-size:11px;font-weight:600;color:var(--txt3)">Filtre analyse :</span>
+  <select id="filter-type-select" style="background:var(--surf);border:1.5px solid var(--brd);color:var(--txt);font:500 11px 'Inter',sans-serif;padding:3px 8px;border-radius:6px;outline:none;">
+    <option value="">Tous types</option>
+  </select>
+  <select id="filter-status-select" style="background:var(--surf);border:1.5px solid var(--brd);color:var(--txt);font:500 11px 'Inter',sans-serif;padding:3px 8px;border-radius:6px;outline:none;">
+    <option value="">Tous statuts</option>
+  </select>
+  <button id="analyse-filter-close" style="margin-left:auto;background:none;border:none;color:var(--txt3);cursor:pointer;font-size:13px;">✕ Fermer</button>
 </div>
 
 <!-- ══ LEFT SIDEBAR ══ -->
@@ -498,6 +517,10 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
   <button class="stool" id="tpres" title="Présentation">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
   </button>
+  <div class="lsep"></div>
+  <button class="stool" id="btn-analyse-filter" title="Filtrer par type/statut">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+  </button>
 </div>
 
 
@@ -539,6 +562,19 @@ body.maps-open #lb{left:calc(var(--sbw) + 300px);}
           <div class="shape-opt" data-shape="rect">Rect</div>
           <div class="shape-opt" data-shape="hex">Hex</div>
         </div>
+      </div>
+    </div>
+    <div class="rps">
+      <div class="rpl">Analyse</div>
+      <div class="rprow"><label>Type</label>
+        <select class="rpin" id="node-type-select" style="padding:6px 8px;">
+          <option value="">— Aucun —</option>
+        </select>
+      </div>
+      <div class="rprow"><label>Statut</label>
+        <select class="rpin" id="node-status-select" style="padding:6px 8px;">
+          <option value="unknown">Non vérifié</option>
+        </select>
       </div>
     </div>
     <div class="rps">
@@ -730,6 +766,64 @@ let previewColorsActive=false;
 let rootColorCursor=0;
 const TAG_COLORS=['#e85d7a','#7c6fdf','#2cb67d','#f0a500','#0ea5e9','#f97316','#a855f7'];
 const tc=i=>TAG_COLORS[i%TAG_COLORS.length];
+
+// ── NODE TYPES & STATUS (analyse métier) ─────────────────────────────────
+const NODE_TYPES = {
+  person:     { label:'Personne',    icon:'👤' },
+  place:      { label:'Lieu',        icon:'📍' },
+  event:      { label:'Évènement',   icon:'📅' },
+  phone:      { label:'Téléphone',   icon:'📞' },
+  vehicle:    { label:'Véhicule',    icon:'🚗' },
+  finance:    { label:'Finance',     icon:'💳' },
+  document:   { label:'Document',    icon:'🧾' },
+  hypothesis: { label:'Hypothèse',   icon:'🎯' },
+  alert:      { label:'Alerte',      icon:'⚠️' },
+  question:   { label:'Question',    icon:'❓' },
+  confirmed:  { label:'Confirmé',    icon:'✅' }
+};
+
+const NODE_STATUS = {
+  unknown:   { label:'Non vérifié' },
+  progress:  { label:'En cours' },
+  probable:  { label:'Probable' },
+  confirmed: { label:'Confirmé' },
+  rejected:  { label:'Écarté' }
+};
+
+// ── TEMPLATES MÉTIER ─────────────────────────────────────────────────────
+const ANALYSIS_TEMPLATES = {
+  investigation: {
+    name: 'Enquête',
+    nodes: [
+      { text:'Faits', type:'event' },
+      { text:'Personnes', type:'person' },
+      { text:'Lieux', type:'place' },
+      { text:'Chronologie', type:'event' },
+      { text:'Hypothèses', type:'hypothesis' },
+      { text:'Points à vérifier', type:'question' }
+    ]
+  },
+  relations: {
+    name: 'Réseau relationnel',
+    nodes: [
+      { text:'Sujet', type:'person' },
+      { text:'Famille', type:'person' },
+      { text:'Amis', type:'person' },
+      { text:'Relations', type:'person' }
+    ]
+  },
+  timeline: {
+    name: 'Chronologie',
+    nodes: [
+      { text:'Avant', type:'event' },
+      { text:'Jour J', type:'event' },
+      { text:'Après', type:'event' }
+    ]
+  }
+};
+
+let activeTypeFilter = null;
+let activeStatusFilter = null;
 
 // ── STATE ─────────────────────────────────────────────────────────────────
 let nodes=[],conns=[],selId=null,hovId=null;
@@ -931,7 +1025,8 @@ const PX=16,NH=36;
 function measure(n){
   const fs=n.fontSize||(n.depth===0?18:n.depth===1?14:12);
   ctx.font=`${n.fontWeight||500} ${fs}px Inter,sans-serif`;
-  const label=(n.emoji?n.emoji+' ':'')+n.text;
+  const typeIcon=NODE_TYPES[n.type]?NODE_TYPES[n.type].icon+' ':'';
+  const label=(n.emoji?n.emoji+' ':'')+typeIcon+n.text;
   const maxW=n.depth===0?240:n.depth===1?180:150;
   n.width=Math.min(maxW,Math.max(ctx.measureText(label).width/scale+PX*2+10,n.depth===0?100:72));
   n.height=n.depth===0?44:n.shape==='hex'?NH+4:NH;
@@ -1726,7 +1821,7 @@ function _render(){
   // 5) Creating frame preview
   if(creatingFrame&&frameStart){const fx=Math.min(frameStart.x,frameStart.ex||frameStart.x),fy=Math.min(frameStart.y,frameStart.ey||frameStart.y),fw=Math.abs((frameStart.ex||frameStart.x)-frameStart.x),fh=Math.abs((frameStart.ey||frameStart.y)-frameStart.y);if(fw>5||fh>5){ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5/scale;ctx.setLineDash([6/scale,4/scale]);ctx.strokeRect(fx,fy,fw,fh);ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(fx,fy,fw,fh);ctx.setLineDash([]);}}
   if(selRect){const{sx,sy,ex,ey}=selRect;ctx.strokeStyle='rgba(91,106,240,.7)';ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.strokeRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.fillStyle='rgba(91,106,240,.06)';ctx.fillRect(Math.min(sx,ex),Math.min(sy,ey),Math.abs(ex-sx),Math.abs(ey-sy));ctx.setLineDash([]);}
-  for(const n of nodes){if(isHidden(n.id))continue;const dimTag=activeTagFilter&&!(n.tags||[]).includes(activeTagFilter);const dimFocus=shouldDimNode(n.id);if(dimTag||dimFocus){ctx.save();ctx.globalAlpha=dimTag?0.18:0.22;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);if(isFocusActive()&&n.id===focusBranchRootId){ctx.save();const col=branchColor(n);ctx.beginPath();ctx.roundRect(n.x-n.width/2-5,n.y-n.height/2-5,n.width+10,n.height+10,(n.shape==='pill'?n.height/2+5:13));ctx.strokeStyle=col;ctx.lineWidth=2.5/scale;ctx.setLineDash([5/scale,3/scale]);ctx.stroke();ctx.setLineDash([]);ctx.restore();}}}
+  for(const n of nodes){if(isHidden(n.id))continue;const dimTag=activeTagFilter&&!(n.tags||[]).includes(activeTagFilter);const dimFocus=shouldDimNode(n.id);const dimType=activeTypeFilter&&(n.type||null)!==activeTypeFilter;const dimStatus=activeStatusFilter&&(n.status||'unknown')!==activeStatusFilter;if(dimTag||dimFocus||dimType||dimStatus){ctx.save();ctx.globalAlpha=dimTag?0.18:0.22;measure(n);drawNode(n);ctx.restore();}else{measure(n);drawNode(n);if(isFocusActive()&&n.id===focusBranchRootId){ctx.save();const col=branchColor(n);ctx.beginPath();ctx.roundRect(n.x-n.width/2-5,n.y-n.height/2-5,n.width+10,n.height+10,(n.shape==='pill'?n.height/2+5:13));ctx.strokeStyle=col;ctx.lineWidth=2.5/scale;ctx.setLineDash([5/scale,3/scale]);ctx.stroke();ctx.setLineDash([]);ctx.restore();}}}
   ctx.restore();
 }
 
@@ -1805,10 +1900,13 @@ function drawNode(n){
   else{ctx.strokeStyle=isSel?col:isHov?col+'99':col+'44';ctx.lineWidth=isSel?2:1.5;ctx.stroke();}
   if(selectedIds.has(n.id)&&selectedIds.size>1){ctx.beginPath();ctx.roundRect(x-3,y-3,n.width+6,n.height+6,r+3);ctx.strokeStyle=col;ctx.lineWidth=2;ctx.setLineDash([3,2]);ctx.stroke();ctx.setLineDash([]);}
   if(isHit){if(n.shape==='hex')drawHex(ctx,n.x,n.y,n.width/2+7,n.height/2+7);else{ctx.beginPath();ctx.roundRect(x-4,y-4,n.width+8,n.height+8,r+4);}if(isNoteHit){ctx.strokeStyle=isCurHit?'#0ea5e9':'#0ea5e955';}else{ctx.strokeStyle=isCurHit?'#f0a500':'#f0a50055';}ctx.lineWidth=2.5;ctx.setLineDash(isCurHit?[]:[4,3]);ctx.stroke();ctx.setLineDash([]);}
-  const label=(n.emoji?n.emoji+' ':'')+n.text;
+  const typeIcon=NODE_TYPES[n.type]?NODE_TYPES[n.type].icon+' ':'';
+  const label=(n.emoji?n.emoji+' ':'')+typeIcon+n.text;
   ctx.font=`${n.fontWeight||500} ${n.fontSize||13}px Inter,sans-serif`;
   ctx.fillStyle=(isRoot||n.depth===1)?bestTextColor(col):(isDark?'#e4e8f8':'#1a1d2e');
   ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,n.x+2,n.y,n.width-PX*2);
+  // Status badge
+  if(n.status&&n.status!=='unknown'){const stColors={progress:'#0ea5e9',probable:'#f0a500',confirmed:'#2cb67d',rejected:'#f06464'};const stC=stColors[n.status]||'#999';const bx=n.x-n.width/2+8,by=n.y+n.height/2-5;ctx.beginPath();ctx.arc(bx,by,4,0,Math.PI*2);ctx.fillStyle=stC;ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();}
   if((n.tags||[]).length&&!isRoot){const tagY=n.y+n.height/2+8;let tx2=n.x-(n.tags.length*28)/2;n.tags.slice(0,3).forEach(tag=>{const c=tc(allTags.indexOf(tag));ctx.fillStyle=c;ctx.beginPath();ctx.roundRect(tx2,tagY-5,28,10,5);ctx.fill();ctx.fillStyle='#fff';ctx.font='bold 6px Inter,sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(tag.slice(0,4),tx2+14,tagY+.5);tx2+=30;});}
   if(n.note){ctx.beginPath();ctx.arc(n.x+n.width/2-5,y+5,4,0,Math.PI*2);ctx.fillStyle='#f0a500';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=1.2;ctx.stroke();}
   if(n.url){ctx.beginPath();ctx.arc(n.x-n.width/2+8,y+8,5,0,Math.PI*2);ctx.fillStyle='#0ea5e9';ctx.fill();}
@@ -1895,7 +1993,7 @@ function openRP(id){
   // Sync emoji display
   const ed=document.getElementById('emoji-display');
   ed.textContent=n.emoji||'😊';ed.style.opacity=n.emoji?'1':'.4';
-  renderTagRow(id);renderColorRow(id);renderConnStyleRow(id);
+  renderTagRow(id);renderColorRow(id);renderConnStyleRow(id);syncAnalysisSelects(id);
   // Sync map link label
   const mapLinkLabel=document.getElementById('rp-maplink-label');
   if(mapLinkLabel){const store=getMapsStore();const linked=n.mapLink?store.maps.find(m=>m.id===n.mapLink):null;mapLinkLabel.textContent=linked?linked.name:'Aucun';}
@@ -3168,6 +3266,107 @@ function openMapLinkPicker(nodeId){
 }
 document.getElementById('rp-maplink-btn').addEventListener('click',()=>{if(selId)openMapLinkPicker(selId);});
 document.getElementById('rp-maplink-clear').addEventListener('click',()=>{const n=gn(selId);if(n){snap();n.mapLink=null;document.getElementById('rp-maplink-label').textContent='Aucun';render();}});
+
+// ── ANALYSIS: Type & Status selects population ──────────────────────────
+(function initAnalysisSelects(){
+  const ts=document.getElementById('node-type-select');
+  const ss=document.getElementById('node-status-select');
+  Object.entries(NODE_TYPES).forEach(([k,v])=>{const o=document.createElement('option');o.value=k;o.textContent=v.icon+' '+v.label;ts.appendChild(o);});
+  Object.entries(NODE_STATUS).forEach(([k,v])=>{if(k==='unknown')return;const o=document.createElement('option');o.value=k;o.textContent=v.label;ss.appendChild(o);});
+  // Filter selects
+  const fts=document.getElementById('filter-type-select');
+  const fss=document.getElementById('filter-status-select');
+  Object.entries(NODE_TYPES).forEach(([k,v])=>{const o=document.createElement('option');o.value=k;o.textContent=v.icon+' '+v.label;fts.appendChild(o);});
+  Object.entries(NODE_STATUS).forEach(([k,v])=>{const o=document.createElement('option');o.value=k;o.textContent=v.label;fss.appendChild(o);});
+})();
+
+// ── ANALYSIS: Right panel sync ──────────────────────────────────────────
+function syncAnalysisSelects(id){
+  const n=gn(id);if(!n)return;
+  document.getElementById('node-type-select').value=n.type||'';
+  document.getElementById('node-status-select').value=n.status||'unknown';
+}
+
+document.getElementById('node-type-select').addEventListener('change',function(){
+  const n=gn(selId);if(!n)return;snap();n.type=this.value||null;measure(n);render();mmR();
+});
+document.getElementById('node-status-select').addEventListener('change',function(){
+  const n=gn(selId);if(!n)return;snap();n.status=this.value||'unknown';render();mmR();
+});
+
+// ── ANALYSIS: Template popup ────────────────────────────────────────────
+const analyseTplPopup=document.getElementById('analyse-tpl-popup');
+function buildAnalyseTplList(){
+  const list=document.getElementById('analyse-tpl-list');
+  list.innerHTML='';
+  // Empty map option
+  const emptyBtn=document.createElement('button');
+  emptyBtn.className='hbtn';emptyBtn.style.cssText='width:100%;justify-content:flex-start;height:32px;';
+  emptyBtn.textContent='📄 Carte vide';
+  emptyBtn.addEventListener('click',()=>{closeAnalyseTpl();const name=prompt('Nom de la carte :','Nouvelle carte');if(name===null)return;createNewMap(name.trim()||'Nouvelle carte');toast('Carte créée','ok');});
+  list.appendChild(emptyBtn);
+  // Template options
+  Object.entries(ANALYSIS_TEMPLATES).forEach(([key,tpl])=>{
+    const btn=document.createElement('button');
+    btn.className='hbtn';btn.style.cssText='width:100%;justify-content:flex-start;height:32px;';
+    btn.textContent='📋 '+tpl.name;
+    btn.addEventListener('click',()=>{closeAnalyseTpl();createFromTemplate(key);});
+    list.appendChild(btn);
+  });
+}
+
+function openAnalyseTpl(){buildAnalyseTplList();analyseTplPopup.style.display='block';}
+function closeAnalyseTpl(){analyseTplPopup.style.display='none';}
+
+document.getElementById('btn-analyse-tpl').addEventListener('click',e=>{
+  e.stopPropagation();
+  analyseTplPopup.style.display==='block'?closeAnalyseTpl():openAnalyseTpl();
+});
+document.addEventListener('click',e=>{if(!analyseTplPopup.contains(e.target)&&e.target!==document.getElementById('btn-analyse-tpl'))closeAnalyseTpl();});
+
+// ── ANALYSIS: Create from template ──────────────────────────────────────
+function createFromTemplate(templateId){
+  const tpl=ANALYSIS_TEMPLATES[templateId];
+  if(!tpl)return;
+  const name=prompt('Nom du dossier :',tpl.name);
+  if(name===null)return;
+  createNewMap(name.trim()||tpl.name, true);
+  const cx=cv.width/2/scale, cy=cv.height/2/scale;
+  const root=mkNode(name.trim()||'Dossier', cx, cy, 0, null, PAL[0]);
+  tpl.nodes.forEach((n,i)=>{
+    const child=mkNode(n.text, cx, cy+80+i*60, 1, root.id, null);
+    child.type=n.type||null;
+    child.status='unknown';
+    measure(child);
+  });
+  autoLayout(root.id);
+  rebuildTags();fitView();snap();
+  toast('Template "'+tpl.name+'" chargé !','ok');
+  render();mmR();
+}
+
+// ── ANALYSIS: Filter bar ────────────────────────────────────────────────
+const analyseFilterBar=document.getElementById('analyse-filter-bar');
+
+document.getElementById('btn-analyse-filter').addEventListener('click',()=>{
+  const isVisible=analyseFilterBar.style.display==='flex';
+  analyseFilterBar.style.display=isVisible?'none':'flex';
+  document.getElementById('btn-analyse-filter').classList.toggle('on',!isVisible);
+  if(isVisible){activeTypeFilter=null;activeStatusFilter=null;render();}
+});
+
+document.getElementById('analyse-filter-close').addEventListener('click',()=>{
+  analyseFilterBar.style.display='none';
+  document.getElementById('btn-analyse-filter').classList.remove('on');
+  activeTypeFilter=null;activeStatusFilter=null;render();
+});
+
+document.getElementById('filter-type-select').addEventListener('change',function(){
+  activeTypeFilter=this.value||null;render();
+});
+document.getElementById('filter-status-select').addEventListener('change',function(){
+  activeStatusFilter=this.value||null;render();
+});
 
 // ════════════════════════════════════════════════════════════════════════
 
